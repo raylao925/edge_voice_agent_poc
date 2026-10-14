@@ -48,21 +48,40 @@ ws.onclose = () => { statusEl.textContent = '连接断开，请刷新页面'; };
 ws.onerror = () => { statusEl.textContent = '连接出错'; };
 ws.onmessage = (ev) => {
   const msg = JSON.parse(ev.data);
-  if (msg.type === 'result') {
-    addBubble('me', '你', msg.stt || '(没听清)');
-    addBubble('bot', '助手', msg.reply);
-    if (msg.timings) addPerfBubble(msg);
-    statusEl.textContent = '已连接，点麦克风开始';
-    micBtn.classList.remove('live');
-    const audio = new Audio('data:audio/wav;base64,' + msg.audio);
-    audio.play();
+  if (msg.type === 'stt') {
+    addBubble('me', '你', msg.text || '(没听清)');
+    botBubble = addBubble('bot', '助手', '');
+    statusEl.textContent = '思考中…';
   } else if (msg.type === 'status') {
     statusEl.textContent = msg.text;
+  } else if (msg.type === 'text') {
+    if (botBubble) botBubble.lastChild.textContent += msg.delta;
+  } else if (msg.type === 'audio') {
+    audioQueue.push(msg);
+    playNext();
+  } else if (msg.type === 'done') {
+    addPerfBubble(msg);
+    statusEl.textContent = '已连接，点麦克风开始';
+    micBtn.classList.remove('live');
   } else if (msg.type === 'error') {
     statusEl.textContent = '出错：' + msg.message;
     micBtn.classList.remove('live');
   }
 };
+
+let botBubble = null;
+const audioQueue = [];
+let playing = false;
+
+function playNext() {
+  if (playing || !audioQueue.length) return;
+  playing = true;
+  const msg = audioQueue.shift();
+  const audio = new Audio('data:audio/wav;base64,' + msg.audio);
+  audio.onended = () => { playing = false; playNext(); };
+  audio.onerror = () => { playing = false; playNext(); };
+  audio.play().catch(() => { playing = false; playNext(); });
+}
 
 function rtfClass(rtf) {
   if (rtf < 0.5) return 'rtf-good';
@@ -84,15 +103,15 @@ function addPerfBubble(msg) {
   d.innerHTML = '<div class="label">⏱ 性能（RTF &lt; 1 为实时）</div><div class="perf-grid">'
     + row('STT', t.stt + 's <span class="' + rtfClass(msg.rtf_stt) + '">RTF ' + msg.rtf_stt + '</span>')
     + (t.tool ? row('工具', t.tool + 's') : '')
-    + row('LLM' + (msg.llm_model ? ' (' + msg.llm_model.split('/').pop() + ')' : ''), t.llm + 's')
-    + row('TTS', t.tts + 's <span class="' + rtfClass(msg.rtf_tts) + '">RTF ' + msg.rtf_tts + '</span>')
+    + row('首音延迟', '<b>' + msg.ttfb + 's</b>（' + msg.sentences + ' 句）')
+    + row('TTS 合计', t.tts + 's')
     + row('总计', t.total + 's')
     + toolsHtml
     + '</div><div style="margin-top:6px;color:#888">输入 ' + msg.in_sec + 's → 输出 ' + msg.out_sec + 's</div>';
   logEl.prepend(d);
   document.getElementById('statsbar').innerHTML =
-    '上轮：STT <span class="' + rtfClass(msg.rtf_stt) + '">RTF ' + msg.rtf_stt + '</span>'
-    + ' · TTS <span class="' + rtfClass(msg.rtf_tts) + '">RTF ' + msg.rtf_tts + '</span>'
+    '上轮：首音 <b>' + msg.ttfb + 's</b>'
+    + ' · STT <span class="' + rtfClass(msg.rtf_stt) + '">RTF ' + msg.rtf_stt + '</span>'
     + ' · 总计 ' + t.total + 's';
 }
 
@@ -106,6 +125,7 @@ function addBubble(cls, label, text) {
   d.innerHTML = '<div class="label">' + label + '</div><div></div>';
   d.lastChild.textContent = text;
   logEl.prepend(d);
+  return d;
 }
 
 function pickMime() {

@@ -234,9 +234,8 @@ def detect_intent(user_text: str) -> dict:
     return _keyword_intent(user_text)
 
 
-def agent_reply(user_text: str, status_cb=None):
-    """Two-stage agent: intent -> tool -> grounded answer.
-    Returns (reply_text, info_dict). status_cb(str) gets progress updates."""
+def agent_prepare(user_text: str, status_cb=None):
+    """Intent detection + tool execution. Returns (context, tool_calls, latency)."""
     import time
     from tools import TOOLS
 
@@ -270,13 +269,167 @@ def agent_reply(user_text: str, status_cb=None):
             context = f"【{tool} 执行失败】{str(e)[:100]}"
             if status_cb:
                 status_cb(f"⚠️ 工具执行失败")
+    return context, tool_calls, t_tool
 
+
+def agent_reply(user_text: str, status_cb=None):
+    """Two-stage agent: intent -> tool -> grounded answer.
+    Returns (reply_text, info_dict). status_cb(str) gets progress updates."""
+    import time
+    context, tool_calls, t_tool = agent_prepare(user_text, status_cb=status_cb)
     t0 = time.perf_counter()
     reply, llm_info = llm_reply(user_text, context=context)
     t_llm = time.perf_counter() - t0
     llm_info["tool_calls"] = tool_calls
     llm_info["tool_latency"] = round(t_tool, 2)
     return reply, llm_info
+
+
+# ---------------------------------------------------------------- streaming
+def llm_stream(user_text: str, context: str = ""):
+    """Yield LLM reply text chunks (SSE). Mock mode yields sentence chunks."""
+    import urllib.request
+    system = "你是一个简洁的中文语音助手。用简体中文回答，控制在两句话以内，口语化，不要用列表或代码。"
+    if context:
+        system += f"\n以下是实时工具返回的参考资料，请基于它们回答，不要编造：\n{context[:3000]}"
+    or_key = os.environ.get("OPENROUTER_API_KEY", "").strip() or _read_key_file("openrouter.key")
+    if not or_key:
+        mock = "我听到了，你说的是「" + user_text + "」。大语言模型还没接上，这是测试回复。"
+        for sent in _split_sentences(mock):
+            yield sent
+        return
+    model = os.environ.get("OPENROUTER_MODEL", "openrouter/free").strip()
+    payload = json.dumps({
+        "model": model,
+        "max_tokens": 200,
+        "stream": True,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_text},
+        ],
+    }).encode()
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions", data=payload,
+        headers={"Authorization": "Bearer " + or_key,
+                 "Content-Type": "application/json",
+                 "HTTP-Referer": "https://muse.ai/",
+                 "X-Title": "voice-agent-poc"})
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        for raw_line in resp:
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                delta = json.loads(data)["choices"][0]["delta"].get("content", "")
+            except Exception:
+                continue
+            if delta:
+                yield delta
+
+
+def _split_sentences(text: str):
+    """Split Chinese text into sentences on 。！？\n (keeps delimiter)."""
+    import re
+    parts = re.split(r"([。！？\n]+)", text)
+    sentences = []
+    for i in range(0, len(parts) - 1, 2):
+        s = (parts[i] + parts[i + 1]).strip()
+        if s:
+            sentences.append(s)
+    tail = parts[-1].strip() if len(parts) % 2 == 1 else ""
+    if tail:
+        sentences.append(tail)
+    return sentences
+
+
+def stream_sentences(text_iter):
+    """Assemble streamed text chunks into complete sentences."""
+    import re
+    buf = ""
+    for chunk in text_iter:
+        buf += chunk
+        while True:
+            m = re.search(r"^.*?[。！？\n]", buf, re.DOTALL)
+            if not m:
+                break
+            sent = m.group(0).strip()
+            buf = buf[m.end():]
+            if sent:
+                yield sent
+    tail = buf.strip()
+    if tail:
+        yield tail
+
+
+def run_turn_stream(rec_bytes: bytes, on_event) -> dict:
+    """Streaming pipeline: STT -> agent tools -> LLM stream -> per-sentence TTS.
+
+    Calls on_event(dict) for each event:
+      {"type": "stt", ...}, {"type": "status", "text": ...},
+      {"type": "text", "delta": ...}, {"type": "audio", "seq": N, ...},
+      {"type": "done", ...}
+    Returns summary dict.
+    """
+    import base64
+    import time
+    t = {}
+
+    # 1) STT
+    t0 = time.perf_counter()
+    text, in_sec = transcribe(rec_bytes)
+    t["stt"] = time.perf_counter() - t0
+    rtf_stt = round(t["stt"] / in_sec, 3) if in_sec > 0 else 0
+    on_event({"type": "stt", "text": text,
+              "in_sec": round(in_sec, 2), "rtf_stt": rtf_stt,
+              "latency": round(t["stt"], 2)})
+
+    # 2) agent: intent + tools
+    def _status(s):
+        on_event({"type": "status", "text": s})
+    t0 = time.perf_counter()
+    context, tool_calls, t_tool = agent_prepare(text, status_cb=_status)
+    t["tool"] = time.perf_counter() - t0
+
+    # 3) LLM stream -> per-sentence TTS
+    t0_llm = time.perf_counter()
+    full_reply = ""
+    seq = 0
+    ttfb = None  # time to first audio
+    total_out_sec = 0.0
+    t_tts = 0.0
+    for sentence in stream_sentences(llm_stream(text, context=context)):
+        full_reply += sentence
+        on_event({"type": "text", "delta": sentence})
+        s0 = time.perf_counter()
+        wav, out_sec = synth_wav(sentence)
+        t_tts += time.perf_counter() - s0
+        total_out_sec += out_sec
+        if ttfb is None:
+            ttfb = round(time.perf_counter() - t0_llm, 2)
+        on_event({"type": "audio", "seq": seq, "text": sentence,
+                  "audio": base64.b64encode(wav).decode(),
+                  "latency": round(time.perf_counter() - s0, 2)})
+        seq += 1
+    t["llm_stream"] = round(time.perf_counter() - t0_llm, 2)
+    t["tts"] = round(t_tts, 2)
+    t["total"] = round(t["stt"] + t["tool"] + t["llm_stream"], 2)
+
+    summary = {
+        "text": text,
+        "reply": full_reply,
+        "in_sec": round(in_sec, 2),
+        "out_sec": round(total_out_sec, 2),
+        "sentences": seq,
+        "ttfb": ttfb,
+        "timings": {k: round(v, 2) for k, v in t.items()},
+        "rtf_stt": rtf_stt,
+        "tool_calls": tool_calls,
+    }
+    on_event({"type": "done", **summary})
+    return summary
 
 
 def run_turn(rec_bytes: bytes, status_cb=None) -> dict:

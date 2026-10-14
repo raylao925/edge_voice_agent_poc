@@ -15,7 +15,7 @@ import os
 
 import websockets
 
-from pipeline import init_tts, run_turn
+from pipeline import init_tts, run_turn_stream
 
 WWW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "www")
 PORT = int(os.environ.get("VOICE_PORT", "8765"))
@@ -35,34 +35,27 @@ async def handle(ws):
                 print(f"[ws] utterance: {len(rec)} bytes", flush=True)
 
                 loop = asyncio.get_running_loop()
+                q: asyncio.Queue = asyncio.Queue()
 
-                def status_cb(text):
-                    # called from worker thread; schedule the WS send
-                    asyncio.run_coroutine_threadsafe(
-                        ws.send(json.dumps({"type": "status", "text": text})), loop)
+                def on_event(ev):
+                    # called from worker thread
+                    loop.call_soon_threadsafe(q.put_nowait, ev)
 
-                res = await asyncio.to_thread(run_turn, rec, status_cb)
-                print(f"[stt] {res['text']} "
-                      f"(rtf={res['rtf_stt']})", flush=True)
-                for tc in res["llm"].get("tool_calls", []):
-                    print(f"[tool] {tc['tool']} {tc['latency']}s", flush=True)
-                print(f"[llm] {res['reply'][:60]}... "
-                      f"({res['timings']['llm']}s)", flush=True)
-                print(f"[tts] rtf={res['rtf_tts']} "
-                      f"total={res['timings']['total']}s", flush=True)
-                await ws.send(json.dumps({
-                    "type": "result",
-                    "stt": res["text"],
-                    "reply": res["reply"],
-                    "audio": base64.b64encode(res["wav"]).decode(),
-                    "timings": res["timings"],
-                    "in_sec": res["in_sec"],
-                    "out_sec": res["out_sec"],
-                    "rtf_stt": res["rtf_stt"],
-                    "rtf_tts": res["rtf_tts"],
-                    "llm_model": res["llm"].get("model"),
-                    "tool_calls": res["llm"].get("tool_calls", []),
-                }))
+                async def _worker():
+                    await asyncio.to_thread(run_turn_stream, rec, on_event)
+                    await q.put({"type": "__end__"})
+
+                wt = asyncio.create_task(_worker())
+                while True:
+                    ev = await q.get()
+                    if ev.get("type") == "__end__":
+                        break
+                    if ev.get("type") == "done":
+                        print(f"[done] ttfb={ev.get('ttfb')}s "
+                              f"sentences={ev.get('sentences')} "
+                              f"total={ev.get('timings', {}).get('total')}s", flush=True)
+                    await ws.send(json.dumps(ev))
+                await wt
             except Exception as e:
                 print("[err]", repr(e), flush=True)
                 await ws.send(json.dumps({"type": "error", "message": str(e)[:200]}))
