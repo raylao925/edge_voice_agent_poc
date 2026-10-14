@@ -1,0 +1,13 @@
+[project]
+name = "edge-voice-agent-poc"
+version = "0.1.0"
+description = "CPU voice agent POC: FunASR Paraformer STT + OpenRouter LLM + Piper TTS"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "sherpa-onnx>=1.10",
+    "sherpa-onnx-core>=1.10",  # native libs; uv sometimes skips this transitive dep
+    "websockets>=14",
+    "numpy>=1.24",
+]

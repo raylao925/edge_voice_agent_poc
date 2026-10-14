@@ -45,12 +45,21 @@
 - Python 3.10+
 - ffmpeg（`apt install ffmpeg` / `brew install ffmpeg`）
 
-### 2. 安装依赖
+### 2. 安装依赖（推荐 uv）
+
+先装 [uv](https://docs.astral.sh/uv/)（如果还没装）：
 
 ```bash
-python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
+
+然后一键同步环境（自动建 venv、按 `uv.lock` 装精确版本）：
+
+```bash
+uv sync
+```
+
+> 不想用 uv 的话，传统方式也行：`python -m venv venv && source venv/bin/activate && pip install -r requirements.txt`
 
 ### 3. 下载模型和二进制
 
@@ -85,7 +94,7 @@ mkdir -p .keys && echo "sk-or-v1-..." > .keys/openrouter.key && chmod 600 .keys/
 **浏览器实时对话：**
 
 ```bash
-python server.py
+uv run server.py
 # 打开 http://127.0.0.1:8765
 ```
 
@@ -95,7 +104,7 @@ python server.py
 **命令行单轮对话：**
 
 ```bash
-python voice_chat.py input.m4a reply.mp3
+uv run voice_chat.py input.m4a reply.mp3
 # 输出：STT 文本、LLM 回复文本，并生成 reply.mp3
 ```
 
