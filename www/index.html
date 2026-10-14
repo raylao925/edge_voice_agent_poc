@@ -16,14 +16,23 @@
   .bubble { background: #1e1e1e; border-radius: 12px; padding: 12px 14px; margin: 10px 0; font-size: 15px; }
   .bubble.me { border-left: 3px solid #3498db; }
   .bubble.bot { border-left: 3px solid #2ecc71; }
+  .bubble.perf { border-left: 3px solid #f39c12; font-size: 13px; }
   .label { font-size: 12px; color: #888; margin-bottom: 4px; }
   #hint { text-align: center; color: #666; font-size: 13px; margin-top: 24px; }
+  .perf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin-top: 6px; }
+  .perf-row { display: flex; justify-content: space-between; }
+  .perf-row .k { color: #aaa; }
+  .rtf-good { color: #2ecc71; font-weight: bold; }
+  .rtf-warn { color: #f39c12; font-weight: bold; }
+  .rtf-bad { color: #e74c3c; font-weight: bold; }
+  #statsbar { text-align: center; font-size: 12px; color: #888; min-height: 18px; margin-top: 8px; }
 </style>
 </head>
 <body>
 <h1>🎙️ Voice Agent POC</h1>
 <button id="mic">🎤</button>
 <div id="status">连接中…</div>
+<div id="statsbar"></div>
 <div id="log"></div>
 <div id="hint">点麦克风开始说话，停顿约 1.5 秒自动结束<br>STT: FunASR Paraformer GGUF · TTS: Piper chaowen</div>
 <script>
@@ -42,6 +51,7 @@ ws.onmessage = (ev) => {
   if (msg.type === 'result') {
     addBubble('me', '你', msg.stt || '(没听清)');
     addBubble('bot', '助手', msg.reply);
+    if (msg.timings) addPerfBubble(msg);
     statusEl.textContent = '已连接，点麦克风开始';
     micBtn.classList.remove('live');
     const audio = new Audio('data:audio/wav;base64,' + msg.audio);
@@ -51,6 +61,30 @@ ws.onmessage = (ev) => {
     micBtn.classList.remove('live');
   }
 };
+
+function rtfClass(rtf) {
+  if (rtf < 0.5) return 'rtf-good';
+  if (rtf < 1.0) return 'rtf-warn';
+  return 'rtf-bad';
+}
+
+function addPerfBubble(msg) {
+  const t = msg.timings;
+  const d = document.createElement('div');
+  d.className = 'bubble perf';
+  const row = (k, v) => '<div class="perf-row"><span class="k">' + k + '</span><span>' + v + '</span></div>';
+  d.innerHTML = '<div class="label">⏱ 性能（RTF &lt; 1 为实时）</div><div class="perf-grid">'
+    + row('STT', t.stt + 's <span class="' + rtfClass(msg.rtf_stt) + '">RTF ' + msg.rtf_stt + '</span>')
+    + row('LLM' + (msg.llm_model ? ' (' + msg.llm_model.split('/').pop() + ')' : ''), t.llm + 's')
+    + row('TTS', t.tts + 's <span class="' + rtfClass(msg.rtf_tts) + '">RTF ' + msg.rtf_tts + '</span>')
+    + row('总计', t.total + 's')
+    + '</div><div style="margin-top:6px;color:#888">输入 ' + msg.in_sec + 's → 输出 ' + msg.out_sec + 's</div>';
+  logEl.prepend(d);
+  document.getElementById('statsbar').innerHTML =
+    '上轮：STT <span class="' + rtfClass(msg.rtf_stt) + '">RTF ' + msg.rtf_stt + '</span>'
+    + ' · TTS <span class="' + rtfClass(msg.rtf_tts) + '">RTF ' + msg.rtf_tts + '</span>'
+    + ' · 总计 ' + t.total + 's';
+}
 
 function addBubble(cls, label, text) {
   const d = document.createElement('div');

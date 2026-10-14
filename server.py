@@ -15,7 +15,7 @@ import os
 
 import websockets
 
-from pipeline import init_tts, llm_reply, synth_wav, transcribe
+from pipeline import init_tts, run_turn
 
 WWW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "www")
 PORT = int(os.environ.get("VOICE_PORT", "8765"))
@@ -33,16 +33,24 @@ async def handle(ws):
             try:
                 rec = base64.b64decode(msg["data"])
                 print(f"[ws] utterance: {len(rec)} bytes", flush=True)
-                text = await asyncio.to_thread(transcribe, rec)
-                print(f"[stt] {text}", flush=True)
-                reply = await asyncio.to_thread(llm_reply, text)
-                print(f"[llm] {reply}", flush=True)
-                wav = await asyncio.to_thread(synth_wav, reply)
+                res = await asyncio.to_thread(run_turn, rec)
+                print(f"[stt] {res['text']} "
+                      f"(rtf={res['rtf_stt']})", flush=True)
+                print(f"[llm] {res['reply'][:60]}... "
+                      f"({res['timings']['llm']}s)", flush=True)
+                print(f"[tts] rtf={res['rtf_tts']} "
+                      f"total={res['timings']['total']}s", flush=True)
                 await ws.send(json.dumps({
                     "type": "result",
-                    "stt": text,
-                    "reply": reply,
-                    "audio": base64.b64encode(wav).decode(),
+                    "stt": res["text"],
+                    "reply": res["reply"],
+                    "audio": base64.b64encode(res["wav"]).decode(),
+                    "timings": res["timings"],
+                    "in_sec": res["in_sec"],
+                    "out_sec": res["out_sec"],
+                    "rtf_stt": res["rtf_stt"],
+                    "rtf_tts": res["rtf_tts"],
+                    "llm_model": res["llm"].get("model"),
                 }))
             except Exception as e:
                 print("[err]", repr(e), flush=True)

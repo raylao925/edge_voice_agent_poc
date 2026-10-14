@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """In-chat voice loop: input voice note -> FunASR STT -> OpenRouter LLM -> Piper TTS -> mp3.
 Usage: voice_chat.py <input-audio> <output-mp3>
-Prints: STT text, reply text (for the chat message)."""
+Prints: STT text, reply text, per-stage timings and RTF."""
 import os
 import subprocess
 import sys
 
-from pipeline import init_tts, llm_reply, synth_wav, transcribe
+from pipeline import init_tts, run_turn
 
 
 def main():
@@ -15,14 +15,16 @@ def main():
     with open(src, "rb") as f:
         rec = f.read()
     print(f"[chat] got {len(rec)} bytes", flush=True)
-    text = transcribe(rec)
-    print(f"STT::{text}", flush=True)
-    reply = llm_reply(text)
-    print(f"REPLY::{reply}", flush=True)
-    wav = synth_wav(reply)
+    res = run_turn(rec)
+    print(f"STT::{res['text']}", flush=True)
+    print(f"REPLY::{res['reply']}", flush=True)
+    t = res["timings"]
+    print(f"TIME::stt={t['stt']}s (rtf={res['rtf_stt']}) "
+          f"llm={t['llm']}s tts={t['tts']}s (rtf={res['rtf_tts']}) "
+          f"total={t['total']}s", flush=True)
     tmp = out_mp3 + ".tmp.wav"
     with open(tmp, "wb") as f:
-        f.write(wav)
+        f.write(res["wav"])
     subprocess.run(
         ["ffmpeg", "-y", "-v", "error", "-i", tmp,
          "-c:a", "libmp3lame", "-b:a", "96k", out_mp3],
