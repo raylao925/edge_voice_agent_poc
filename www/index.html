@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Voice Agent POC</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+         max-width: 560px; margin: 0 auto; padding: 24px 16px; background: #111; color: #eee; }
+  h1 { font-size: 20px; text-align: center; }
+  #mic { display: block; width: 120px; height: 120px; margin: 24px auto; border-radius: 50%;
+         border: none; font-size: 48px; background: #2a2a2a; color: #fff; cursor: pointer; }
+  #mic.live { background: #c0392b; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { transform: scale(1.08); } }
+  #status { text-align: center; min-height: 24px; color: #aaa; font-size: 14px; }
+  .bubble { background: #1e1e1e; border-radius: 12px; padding: 12px 14px; margin: 10px 0; font-size: 15px; }
+  .bubble.me { border-left: 3px solid #3498db; }
+  .bubble.bot { border-left: 3px solid #2ecc71; }
+  .label { font-size: 12px; color: #888; margin-bottom: 4px; }
+  #hint { text-align: center; color: #666; font-size: 13px; margin-top: 24px; }
+</style>
+</head>
+<body>
+<h1>🎙️ Voice Agent POC</h1>
+<button id="mic">🎤</button>
+<div id="status">连接中…</div>
+<div id="log"></div>
+<div id="hint">点麦克风开始说话，停顿约 1.5 秒自动结束<br>STT: FunASR Paraformer GGUF · TTS: Piper chaowen</div>
+<script>
+const statusEl = document.getElementById('status');
+const logEl = document.getElementById('log');
+const micBtn = document.getElementById('mic');
+const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/');
+
+let recorder = null, stream = null, chunks = [], vadTimer = null, recording = false;
+
+ws.onopen = () => { statusEl.textContent = '已连接，点麦克风开始'; };
+ws.onclose = () => { statusEl.textContent = '连接断开，请刷新页面'; };
+ws.onerror = () => { statusEl.textContent = '连接出错'; };
+ws.onmessage = (ev) => {
+  const msg = JSON.parse(ev.data);
+  if (msg.type === 'result') {
+    addBubble('me', '你', msg.stt || '(没听清)');
+    addBubble('bot', '助手', msg.reply);
+    statusEl.textContent = '已连接，点麦克风开始';
+    micBtn.classList.remove('live');
+    const audio = new Audio('data:audio/wav;base64,' + msg.audio);
+    audio.play();
+  } else if (msg.type === 'error') {
+    statusEl.textContent = '出错：' + msg.message;
+    micBtn.classList.remove('live');
+  }
+};
+
+function addBubble(cls, label, text) {
+  const d = document.createElement('div');
+  d.className = 'bubble ' + cls;
+  d.innerHTML = '<div class="label">' + label + '</div><div></div>';
+  d.lastChild.textContent = text;
+  logEl.prepend(d);
+}
+
+function pickMime() {
+  const cands = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
+  for (const c of cands) { if (window.MediaRecorder && MediaRecorder.isTypeSupported(c)) return c; }
+  return '';
+}
+
+async function startRec() {
+  stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const mime = pickMime();
+  chunks = [];
+  recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  recorder.onstop = sendUtterance;
+  recorder.start(250);
+  recording = true;
+  micBtn.classList.add('live');
+  statusEl.textContent = '聆听中…停顿自动结束，也可再点一次手动结束';
+  watchSilence();
+}
+
+function watchSilence() {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = ctx.createMediaStreamSource(stream);
+  const an = ctx.createAnalyser();
+  an.fftSize = 1024;
+  src.connect(an);
+  const buf = new Float32Array(an.fftSize);
+  let quietSince = Date.now();
+  vadTimer = setInterval(() => {
+    if (!recording) { clearInterval(vadTimer); ctx.close(); return; }
+    an.getFloatTimeDomainData(buf);
+    let rms = 0;
+    for (let i = 0; i < buf.length; i++) rms += buf[i] * buf[i];
+    rms = Math.sqrt(rms / buf.length);
+    if (rms < 0.02) {
+      if (Date.now() - quietSince > 1500 && chunks.length > 0) stopRec();
+    } else quietSince = Date.now();
+  }, 200);
+}
+
+function stopRec() {
+  if (!recording) return;
+  recording = false;
+  clearInterval(vadTimer);
+  try { recorder.stop(); } catch (e) {}
+  stream.getTracks().forEach(t => t.stop());
+}
+
+function sendUtterance() {
+  micBtn.classList.remove('live');
+  statusEl.textContent = '识别中…';
+  const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+  const rd = new FileReader();
+  rd.onload = () => {
+    const b64 = rd.result.split(',')[1];
+    ws.send(JSON.stringify({ type: 'utterance', data: b64 }));
+  };
+  rd.readAsDataURL(blob);
+}
+
+micBtn.onclick = () => { recording ? stopRec() : startRec().catch(e => {
+  statusEl.textContent = '无法使用麦克风：' + e.message;
+}); };
+</script>
+</body>
+</html>

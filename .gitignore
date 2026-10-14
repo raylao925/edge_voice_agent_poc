@@ -1,0 +1,19 @@
+# models & binaries (fetched by download_models.sh)
+bin/
+models/
+tts/
+# secrets
+.keys/
+.env
+# runtime
+__pycache__/
+*.pyc
+venv/
+.venv/
+# audio artefacts
+*.wav
+*.mp3
+*.webm
+*.m4a
+# OS
+.DS_Store
