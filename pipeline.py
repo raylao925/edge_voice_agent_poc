@@ -94,11 +94,14 @@ def _read_key_file(name: str) -> str:
         return ""
 
 
-def llm_reply(user_text: str):
-    """Returns (reply_text, info_dict with model/latency/token info)."""
+def llm_reply(user_text: str, context: str = ""):
+    """Returns (reply_text, info_dict with model/latency/token info).
+    If context (tool results) is given, it is injected for grounding."""
     import time
     import urllib.request
     system = "你是一个简洁的中文语音助手。用简体中文回答，控制在两句话以内，口语化，不要用列表或代码。"
+    if context:
+        system += f"\n以下是实时工具返回的参考资料，请基于它们回答，不要编造：\n{context[:3000]}"
     # 1) OpenRouter (OpenAI-compatible)
     or_key = os.environ.get("OPENROUTER_API_KEY", "").strip() or _read_key_file("openrouter.key")
     if or_key:
@@ -155,8 +158,129 @@ def llm_reply(user_text: str):
             {"backend": "mock", "model": "mock", "latency": 0.0})
 
 
-def run_turn(rec_bytes: bytes) -> dict:
-    """Full STT -> LLM -> TTS turn with per-stage timings and RTF.
+# ---------------------------------------------------------------- agent loop
+_INTENT_PROMPT = """判断用户这句话是否需要调用实时工具。只返回 JSON，不要其他文字。
+可选工具：
+- {"tool": "web_search", "query": "搜索关键词"}  // 需要上网查资料、事实、解释
+- {"tool": "news_search", "query": "新闻关键词"}  // 问最新新闻、时事
+- {"tool": "get_weather", "city": "城市名"}       // 问天气
+- {"tool": "none"}                               // 闲聊、打招呼、不需要实时信息
+
+用户：{text}
+JSON:"""
+
+_TOOL_LABEL = {
+    "web_search": "🔍 正在搜索",
+    "news_search": "📰 正在查新闻",
+    "get_weather": "🌤 正在查天气",
+    "fetch_page": "📄 正在读网页",
+}
+
+
+def _llm_json(prompt: str):
+    """Call the LLM for a JSON intent decision. Returns dict or None."""
+    import urllib.request
+    or_key = os.environ.get("OPENROUTER_API_KEY", "").strip() or _read_key_file("openrouter.key")
+    if not or_key:
+        return None
+    model = os.environ.get("OPENROUTER_MODEL", "openrouter/free").strip()
+    payload = json.dumps({
+        "model": model,
+        "max_tokens": 120,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions", data=payload,
+        headers={"Authorization": "Bearer " + or_key,
+                 "Content-Type": "application/json",
+                 "HTTP-Referer": "https://muse.ai/",
+                 "X-Title": "voice-agent-poc"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+        raw = data["choices"][0]["message"]["content"].strip()
+        # tolerate markdown fences
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        return json.loads(raw)
+    except Exception as e:
+        print("[intent] llm failed:", repr(e)[:120], flush=True)
+        return None
+
+
+def _keyword_intent(text: str):
+    """Fallback intent when no LLM key: simple keyword matching."""
+    if any(k in text for k in ("天气", "下雨", "气温", "几度")):
+        city = "澳门"
+        for c in ("澳门", "香港", "台湾", "北京", "上海", "广州", "深圳", "珠海"):
+            if c in text:
+                city = c
+                break
+        return {"tool": "get_weather", "city": city}
+    if any(k in text for k in ("新闻", "头条", "时事")):
+        q = text
+        for k in ("新闻", "头条", "时事", "最新", "今天", "的", "一下", "查", "搜"):
+            q = q.replace(k, "")
+        return {"tool": "news_search", "query": q.strip() or "今日新闻"}
+    if any(k in text for k in ("搜索", "搜一下", "查一下", "什么是", "介绍一下")):
+        return {"tool": "web_search", "query": text}
+    return {"tool": "none"}
+
+
+def detect_intent(user_text: str) -> dict:
+    intent = _llm_json(_INTENT_PROMPT.replace("{text}", user_text))
+    if isinstance(intent, dict) and intent.get("tool") in (
+            "web_search", "news_search", "get_weather", "fetch_page", "none"):
+        return intent
+    return _keyword_intent(user_text)
+
+
+def agent_reply(user_text: str, status_cb=None):
+    """Two-stage agent: intent -> tool -> grounded answer.
+    Returns (reply_text, info_dict). status_cb(str) gets progress updates."""
+    import time
+    from tools import TOOLS
+
+    tool_calls = []
+    context = ""
+    t_tool = 0.0
+
+    intent = detect_intent(user_text)
+    tool = intent.get("tool", "none")
+    if tool != "none" and tool in TOOLS:
+        label = _TOOL_LABEL.get(tool, "⚙️")
+        arg = intent.get("query") or intent.get("city") or intent.get("url") or ""
+        if status_cb:
+            status_cb(f"{label}：{arg}")
+        t0 = time.perf_counter()
+        try:
+            if tool == "get_weather":
+                result = TOOLS[tool](intent.get("city", "澳门"))
+            elif tool == "fetch_page":
+                result = TOOLS[tool](intent.get("url", ""))
+            else:
+                result = TOOLS[tool](intent.get("query", user_text))
+            t_tool = time.perf_counter() - t0
+            tool_calls.append({"tool": tool, "arg": arg,
+                               "latency": round(t_tool, 2)})
+            context = f"【{tool} 结果】\n{result}"
+            print(f"[tool] {tool} done in {t_tool:.1f}s", flush=True)
+        except Exception as e:
+            t_tool = time.perf_counter() - t0
+            print(f"[tool] {tool} failed: {repr(e)[:150]}", flush=True)
+            context = f"【{tool} 执行失败】{str(e)[:100]}"
+            if status_cb:
+                status_cb(f"⚠️ 工具执行失败")
+
+    t0 = time.perf_counter()
+    reply, llm_info = llm_reply(user_text, context=context)
+    t_llm = time.perf_counter() - t0
+    llm_info["tool_calls"] = tool_calls
+    llm_info["tool_latency"] = round(t_tool, 2)
+    return reply, llm_info
+
+
+def run_turn(rec_bytes: bytes, status_cb=None) -> dict:
+    """Full STT -> agent (LLM + tools) -> TTS turn with timings and RTF.
 
     RTF (real-time factor) = processing_time / audio_duration.
     RTF < 1 means faster than realtime.
@@ -168,8 +292,9 @@ def run_turn(rec_bytes: bytes) -> dict:
     t["stt"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    reply, llm_info = llm_reply(text)
+    reply, llm_info = agent_reply(text, status_cb=status_cb)
     t["llm"] = time.perf_counter() - t0
+    t["tool"] = llm_info.get("tool_latency", 0.0)
 
     t0 = time.perf_counter()
     wav, out_sec = synth_wav(reply)

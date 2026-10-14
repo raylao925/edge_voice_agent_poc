@@ -6,24 +6,41 @@
 浏览器麦克风
     │  WebSocket (音频)
     ▼
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│ STT         │────▶│ LLM          │────▶│ TTS         │
-│ FunASR      │     │ OpenRouter   │     │ Piper       │
-│ Paraformer  │     │ (openrouter/ │     │ chaowen     │
-│ GGUF (q8)   │     │  free)       │     │ int8        │
-│ llama.cpp   │     │              │     │ sherpa-onnx │
-└─────────────┘     └──────────────┘     └─────────────┘
-    │                                         │  WebSocket (音频)
-    ▼                                         ▼
-  文本                                      浏览器播放
+┌─────────────┐     ┌──────────────────────┐     ┌─────────────┐
+│ STT         │────▶│ Agent                │────▶│ TTS         │
+│ FunASR      │     │ 1. 意图判断 (LLM)     │     │ Piper       │
+│ Paraformer  │     │ 2. 工具: 搜索/新闻/天气 │     │ chaowen     │
+│ GGUF (q8)   │     │ 3. 生成回答 (LLM)     │     │ int8        │
+│ llama.cpp   │     │                      │     │ sherpa-onnx │
+└─────────────┘     └──────────────────────┘     └─────────────┘
+    │                                                   │  WebSocket (音频)
+    ▼                                                   ▼
+  文本                                                浏览器播放
 ```
 
 ## 特性
 
 - **全 CPU 运行**：STT 和 TTS 都是量化模型，无需 GPU（2 核 / 8GB 内存实测可跑）
 - **中文优化**：Paraformer 在中文识别上比 Whisper 误字率更低；Piper `chaowen` 中文音色
+- **实时工具**：可上网查资料、查新闻、查天气（见下）
 - **两种玩法**：浏览器实时对话（WebSocket）/ 命令行单轮对话
 - **LLM 可换**：默认 OpenRouter 免费模型，一行环境变量切换
+
+## 实时工具
+
+Agent 采用两段式：LLM 先判断意图 → 执行工具 → LLM 基于工具结果生成口语回答。
+（不用 LLM 原生 function calling，因为免费模型对 tool calling 支持不稳定。）
+
+| 工具 | 实现 | 说明 |
+|---|---|---|
+| `web_search` | DuckDuckGo（`ddgs`） | 免 key；想更准可换 Tavily（有免费额度） |
+| `news_search` | DuckDuckGo news（`ddgs`） | 免 key |
+| `get_weather` | Open-Meteo | 免 key、无严格限额，自动 geocoding |
+| `fetch_page` | Jina Reader | 免 key，把网页转干净文本 |
+
+无 LLM key 时，意图判断降级为关键词匹配（天气/新闻/搜索），工具照样跑。
+
+试试问它：「澳门今天天气怎么样」「最新 AI 新闻」「帮我搜一下横琴人工智能大赛」
 
 ## 实测性能（2 vCPU，无 GPU）
 
@@ -120,12 +137,15 @@ uv run voice_chat.py input.m4a reply.mp3
 ## 文件结构
 
 ```
-├── pipeline.py          # 核心：transcribe() / llm_reply() / synth_wav()
+├── pipeline.py          # 核心：transcribe() / agent_reply() / synth_wav() / run_turn()
+├── tools.py             # 实时工具：web_search / news_search / get_weather / fetch_page
 ├── server.py            # WebSocket 服务 + 浏览器 demo 页（单端口）
 ├── voice_chat.py        # 命令行：音频文件 in → 回复 mp3 out
-├── www/index.html       # 浏览器 demo 前端（录音 + VAD + 播放）
+├── www/index.html       # 浏览器 demo 前端（录音 + VAD + 播放 + 性能面板）
 ├── download_models.sh   # 一键下载二进制和模型
-└── requirements.txt
+├── pyproject.toml       # uv / pip 依赖定义
+├── uv.lock              # 锁定的精确版本
+└── requirements.txt     # pip 备用
 ```
 
 ## 工作原理

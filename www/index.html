@@ -56,6 +56,8 @@ ws.onmessage = (ev) => {
     micBtn.classList.remove('live');
     const audio = new Audio('data:audio/wav;base64,' + msg.audio);
     audio.play();
+  } else if (msg.type === 'status') {
+    statusEl.textContent = msg.text;
   } else if (msg.type === 'error') {
     statusEl.textContent = '出错：' + msg.message;
     micBtn.classList.remove('live');
@@ -73,17 +75,29 @@ function addPerfBubble(msg) {
   const d = document.createElement('div');
   d.className = 'bubble perf';
   const row = (k, v) => '<div class="perf-row"><span class="k">' + k + '</span><span>' + v + '</span></div>';
+  let toolsHtml = '';
+  if (msg.tool_calls && msg.tool_calls.length) {
+    toolsHtml = msg.tool_calls.map(tc =>
+      row('🔧 ' + tc.tool, tc.latency + 's <span style="color:#888">' + escapeHtml(tc.arg || '') + '</span>')
+    ).join('');
+  }
   d.innerHTML = '<div class="label">⏱ 性能（RTF &lt; 1 为实时）</div><div class="perf-grid">'
     + row('STT', t.stt + 's <span class="' + rtfClass(msg.rtf_stt) + '">RTF ' + msg.rtf_stt + '</span>')
+    + (t.tool ? row('工具', t.tool + 's') : '')
     + row('LLM' + (msg.llm_model ? ' (' + msg.llm_model.split('/').pop() + ')' : ''), t.llm + 's')
     + row('TTS', t.tts + 's <span class="' + rtfClass(msg.rtf_tts) + '">RTF ' + msg.rtf_tts + '</span>')
     + row('总计', t.total + 's')
+    + toolsHtml
     + '</div><div style="margin-top:6px;color:#888">输入 ' + msg.in_sec + 's → 输出 ' + msg.out_sec + 's</div>';
   logEl.prepend(d);
   document.getElementById('statsbar').innerHTML =
     '上轮：STT <span class="' + rtfClass(msg.rtf_stt) + '">RTF ' + msg.rtf_stt + '</span>'
     + ' · TTS <span class="' + rtfClass(msg.rtf_tts) + '">RTF ' + msg.rtf_tts + '</span>'
     + ' · 总计 ' + t.total + 's';
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function addBubble(cls, label, text) {

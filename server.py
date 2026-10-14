@@ -33,9 +33,19 @@ async def handle(ws):
             try:
                 rec = base64.b64decode(msg["data"])
                 print(f"[ws] utterance: {len(rec)} bytes", flush=True)
-                res = await asyncio.to_thread(run_turn, rec)
+
+                loop = asyncio.get_running_loop()
+
+                def status_cb(text):
+                    # called from worker thread; schedule the WS send
+                    asyncio.run_coroutine_threadsafe(
+                        ws.send(json.dumps({"type": "status", "text": text})), loop)
+
+                res = await asyncio.to_thread(run_turn, rec, status_cb)
                 print(f"[stt] {res['text']} "
                       f"(rtf={res['rtf_stt']})", flush=True)
+                for tc in res["llm"].get("tool_calls", []):
+                    print(f"[tool] {tc['tool']} {tc['latency']}s", flush=True)
                 print(f"[llm] {res['reply'][:60]}... "
                       f"({res['timings']['llm']}s)", flush=True)
                 print(f"[tts] rtf={res['rtf_tts']} "
@@ -51,6 +61,7 @@ async def handle(ws):
                     "rtf_stt": res["rtf_stt"],
                     "rtf_tts": res["rtf_tts"],
                     "llm_model": res["llm"].get("model"),
+                    "tool_calls": res["llm"].get("tool_calls", []),
                 }))
             except Exception as e:
                 print("[err]", repr(e), flush=True)
