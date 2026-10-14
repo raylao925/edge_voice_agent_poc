@@ -152,8 +152,8 @@ uv run voice_chat.py input.m4a reply.mp3
 
 1. **录音**：浏览器 `MediaRecorder` 录音，前端用 `AnalyserNode` 做简单 VAD（静音 1.5 秒自动截断）
 2. **STT**：音频经 ffmpeg 转 16k 单声道 WAV，调 `llama-funasr-paraformer` 子进程识别
-3. **LLM**：文本调 OpenRouter（OpenAI 兼容接口），system prompt 要求简短口语化中文回答
-4. **TTS**：`sherpa-onnx` 加载 int8 量化 Piper 模型合成 22050Hz 音频，回传浏览器播放
+3. **Agent**：LLM 判断意图 → 按需调用工具（搜索/新闻/天气）→ LLM 生成回答
+4. **TTS streaming**：LLM 用 SSE 流式输出，按句子切分后逐句调 Piper 合成，音频 chunk 经 WebSocket 逐段发送，浏览器顺序播放——**首音延迟约 1.6 秒**（对比非流式约 6 秒）
 
 ## STT 模型對比
 
