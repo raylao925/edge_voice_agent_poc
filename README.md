@@ -155,6 +155,21 @@ uv run voice_chat.py input.m4a reply.mp3
 3. **LLM**：文本调 OpenRouter（OpenAI 兼容接口），system prompt 要求简短口语化中文回答
 4. **TTS**：`sherpa-onnx` 加载 int8 量化 Piper 模型合成 22050Hz 音频，回传浏览器播放
 
+## STT 模型對比
+
+在 2 vCPU 上實測三個 FunASR llama.cpp 模型（6 段測試音頻，CER 已去除標點差異）：
+
+| 模型 | 大小 | 平均 RTF | 平均 CER | 特點 |
+|---|---|---|---|---|
+| **Paraformer q8**（預設） | 226MB | **0.37** | 1.4% | 最快，準確度夠用 |
+| SenseVoiceSmall q8 | 243MB | 0.45 | 4.0% | 自帶標點，支援粵語（yue） |
+| FunASR-Nano q4km | 910MB | 2.07 | **0.0%** | 最準，但 CPU 上比實時慢，不適合即時對話 |
+
+> **結論**：即時 voice agent 繼續用 Paraformer（速度/準確度平衡最好）。
+> Nano 準確度最高但 RTF > 1（Qwen3-0.6B 自回歸解碼在 CPU 上太慢），適合離線轉寫；
+> SenseVoice 速度接近 Paraformer，自帶標點＋粵語支援，有興趣可試。
+> 測試細節見 `stt-bench/`（已 gitignore，不在 repo 內）。
+
 ## 已知限制
 
 - 中文普通话场景优化，粤语识别效果未验证
