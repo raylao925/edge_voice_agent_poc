@@ -27,6 +27,31 @@ impl LlmClient {
         !self.api_key.is_empty()
     }
 
+    /// One-shot (non-streaming) chat completion, used for intent classification.
+    /// Mirrors the Python POC's `_llm_json`.
+    pub async fn chat_once(&self, prompt: &str) -> Result<String> {
+        anyhow::ensure!(self.has_key(), "no openrouter key");
+        let resp = self
+            .http
+            .post("https://openrouter.ai/api/v1/chat/completions")
+            .bearer_auth(&self.api_key)
+            .json(&json!({
+                "model": self.model,
+                "max_tokens": 120,
+                "messages": [{"role": "user", "content": prompt}],
+            }))
+            .send()
+            .await
+            .context("openrouter request")?
+            .error_for_status()
+            .context("openrouter status")?;
+        let v: serde_json::Value = resp.json().await.context("openrouter json")?;
+        v.pointer("/choices/0/message/content")
+            .and_then(|c| c.as_str())
+            .map(|s| s.to_string())
+            .context("bad chat response")
+    }
+
     /// Streams the assistant reply as text deltas into `tx`, then returns.
     /// Mirrors the Python POC's `llm_stream`.
     pub async fn stream_chat(
@@ -39,11 +64,13 @@ impl LlmClient {
             return self.mock_stream(user_text, tx).await;
         }
 
-        let user_content = if context.is_empty() {
-            user_text.to_string()
-        } else {
-            format!("{user_text}\n\n[工具结果]\n{context}")
-        };
+        let mut system = SYSTEM_PROMPT.to_string();
+        if !context.is_empty() {
+            // Mirror the Python POC: tool results go into the system prompt
+            // so the reply stays grounded instead of hallucinated.
+            let ctx: String = context.chars().take(3000).collect();
+            system += &format!("\n以下是实时工具返回的参考资料，请基于它们回答，不要编造：\n{ctx}");
+        }
 
         let resp = self
             .http
@@ -53,8 +80,8 @@ impl LlmClient {
                 "model": self.model,
                 "stream": true,
                 "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_content},
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_text},
                 ],
             }))
             .send()

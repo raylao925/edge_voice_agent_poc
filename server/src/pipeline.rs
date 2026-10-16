@@ -97,7 +97,7 @@ pub async fn run_turn(
 
     // 2) agent: intent + tools
     let t0 = Instant::now();
-    let agent = agent_prepare(&stt.text, &tx).await?;
+    let agent = agent_prepare(&stt.text, &ctx.llm, &tx).await?;
     t.insert("tool".into(), t0.elapsed().as_secs_f64());
 
     // 3) LLM stream -> per-sentence TTS

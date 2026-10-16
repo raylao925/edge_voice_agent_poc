@@ -52,5 +52,14 @@ pub struct DoneSummary {
     pub ttfb: Option<f64>,
     pub timings: HashMap<String, f64>,
     pub rtf_stt: f64,
-    pub tool_calls: Vec<String>,
+    pub tool_calls: Vec<ToolCallInfo>,
+}
+
+/// One executed tool call, shown in the frontend perf panel.
+/// Wire-compatible with the Python POC: `{tool, arg, latency}`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolCallInfo {
+    pub tool: String,
+    pub arg: String,
+    pub latency: f64,
 }
