@@ -24,3 +24,6 @@ server/target/
 /bin
 /models
 /tts
+
+# tauri client
+client/src-tauri/target/

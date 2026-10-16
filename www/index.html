@@ -39,7 +39,11 @@
 const statusEl = document.getElementById('status');
 const logEl = document.getElementById('log');
 const micBtn = document.getElementById('mic');
-const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/');
+const isTauri = !!(window.__TAURI_INTERNALS__ || window.__TAURI__);
+const wsUrl = isTauri
+  ? 'ws://127.0.0.1:8765/ws' // Tauri native client -> local Rust server
+  : (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/';
+const ws = new WebSocket(wsUrl);
 
 let recorder = null, stream = null, chunks = [], vadTimer = null, recording = false;
 
