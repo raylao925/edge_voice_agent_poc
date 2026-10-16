@@ -45,6 +45,11 @@ const wsUrl = isTauri
   : (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/';
 const ws = new WebSocket(wsUrl);
 
+// native client (Tauri tray menu) asks for a fresh conversation
+window.addEventListener('va-new-conversation', () => {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type: 'new_conversation'}));
+});
+
 let recorder = null, stream = null, chunks = [], vadTimer = null, recording = false;
 
 ws.onopen = () => { statusEl.textContent = '已连接，点麦克风开始'; };
