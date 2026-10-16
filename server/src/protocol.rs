@@ -1,0 +1,56 @@
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// Messages the browser/Tauri client sends us.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+pub enum ClientMsg {
+    #[serde(rename = "ping")]
+    Ping,
+    #[serde(rename = "utterance")]
+    Utterance { data: String }, // base64-encoded recorded audio
+}
+
+/// Events we stream back. Wire-compatible with the Python POC (`server.py`),
+/// so the existing `www/index.html` works unchanged.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum Event {
+    #[serde(rename = "pong")]
+    Pong,
+    #[serde(rename = "stt")]
+    Stt {
+        text: String,
+        in_sec: f64,
+        rtf_stt: f64,
+        latency: f64,
+    },
+    #[serde(rename = "status")]
+    Status { text: String },
+    #[serde(rename = "text")]
+    Text { delta: String },
+    #[serde(rename = "audio")]
+    Audio {
+        seq: usize,
+        text: String,
+        audio: String, // base64-encoded wav chunk
+        latency: f64,
+    },
+    #[serde(rename = "done")]
+    Done(DoneSummary),
+    #[serde(rename = "error")]
+    Error { message: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DoneSummary {
+    pub text: String,
+    pub reply: String,
+    pub in_sec: f64,
+    pub out_sec: f64,
+    pub sentences: usize,
+    pub ttfb: Option<f64>,
+    pub timings: HashMap<String, f64>,
+    pub rtf_stt: f64,
+    pub tool_calls: Vec<String>,
+}
