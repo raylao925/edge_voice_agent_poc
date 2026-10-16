@@ -8,7 +8,13 @@ pub enum ClientMsg {
     #[serde(rename = "ping")]
     Ping,
     #[serde(rename = "utterance")]
-    Utterance { data: String }, // base64-encoded recorded audio
+    Utterance {
+        data: String, // base64-encoded recorded audio
+        /// STT language hint: "auto" (default), "zh", "yue", "en".
+        /// Optional for wire-compat with older clients.
+        #[serde(default)]
+        lang: Option<String>,
+    },
     /// Clear conversation history and start fresh.
     #[serde(rename = "new_conversation")]
     NewConversation,

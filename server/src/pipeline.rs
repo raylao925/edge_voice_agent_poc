@@ -96,6 +96,7 @@ fn strip_wake_prefix(text: &str) -> &str {
 /// is sent by the socket handler instead).
 pub async fn run_turn(
     rec: Vec<u8>,
+    stt_lang: &str,
     ctx: Arc<AppContext>,
     convo: Arc<std::sync::Mutex<Conversation>>,
     cancel: CancellationToken,
@@ -106,7 +107,7 @@ pub async fn run_turn(
 
     // 1) STT
     let t0 = Instant::now();
-    let stt = ctx.stt.transcribe(&rec).await?;
+    let stt = ctx.stt.transcribe(&rec, stt_lang).await?;
     t.insert("stt".into(), t0.elapsed().as_secs_f64());
     let rtf_stt = if stt.in_sec > 0.0 {
         t["stt"] / stt.in_sec

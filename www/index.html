@@ -32,15 +32,23 @@
 <h1>🎙️ Voice Agent POC</h1>
 <button id="mic">🎤</button>
 <button id="listenBtn" title="唤醒词聆听">🎧</button>
+<select id="sttLang" title="识别语言">
+  <option value="auto" selected>🌐 自动</option>
+  <option value="yue">粵語</option>
+  <option value="zh">國語</option>
+  <option value="en">English</option>
+</select>
 <div id="status">连接中…</div>
 <div id="statsbar"></div>
 <div id="log"></div>
-<div id="hint">点麦克风开始说话，停顿约 1.5 秒自动结束<br>STT: FunASR Paraformer GGUF · TTS: Piper chaowen</div>
+<div id="hint">点麦克风开始说话，停顿约 1.5 秒自动结束<br>STT: SenseVoice（粤/国/英自动识别） · TTS: Piper chaowen</div>
 <script>
 const statusEl = document.getElementById('status');
 const logEl = document.getElementById('log');
 const micBtn = document.getElementById('mic');
 const isTauri = !!(window.__TAURI_INTERNALS__ || window.__TAURI__);
+const sttLangEl = document.getElementById('sttLang');
+const sttLang = () => (sttLangEl && sttLangEl.value) || 'auto';
 const wsUrl = isTauri
   ? 'ws://127.0.0.1:8765/ws' // Tauri native client -> local Rust server
   : (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/';
@@ -214,7 +222,7 @@ function sendUtterance() {
   const rd = new FileReader();
   rd.onload = () => {
     const b64 = rd.result.split(',')[1];
-    ws.send(JSON.stringify({ type: 'utterance', data: b64 }));
+    ws.send(JSON.stringify({ type: 'utterance', data: b64, lang: sttLang() }));
   };
   rd.readAsDataURL(blob);
 }
@@ -323,7 +331,7 @@ function stopPcmRec() {
   recording = false;
   micBtn.classList.remove('live');
   statusEl.textContent = '识别中…';
-  ws.send(JSON.stringify({ type: 'utterance', data: b64encode(new Uint8Array(encodeWav(samples, 16000))) }));
+  ws.send(JSON.stringify({ type: 'utterance', data: b64encode(new Uint8Array(encodeWav(samples, 16000))), lang: sttLang() }));
 }
 
 function encodeWav(samples, sampleRate) {

@@ -10,6 +10,10 @@ pub struct Config {
     pub openrouter_model: String,
     pub stt_bin: PathBuf,
     pub stt_model: PathBuf,
+    /// "sensevoice" (default, in-process, zh/en/ja/ko/yue) or "funasr"
+    /// (Paraformer subprocess, Mandarin-only). Env: STT_ENGINE.
+    pub stt_engine: String,
+    pub sense_voice_model_dir: PathBuf,
     pub tts_model_dir: PathBuf,
     pub kws_model_dir: PathBuf,
 }
@@ -43,13 +47,22 @@ impl Config {
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| "openrouter/free".to_string());
 
+        let stt_engine = std::env::var("STT_ENGINE")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "sensevoice".to_string());
+
         Self {
             port,
             www_dir: root.join("www"),
             openrouter_key,
             openrouter_model,
+            stt_engine,
             stt_bin: root.join("bin").join("llama-funasr-paraformer"),
             stt_model: root.join("models").join("paraformer-q8.gguf"),
+            sense_voice_model_dir: root
+                .join("models")
+                .join("sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"),
             tts_model_dir: root
                 .join("tts")
                 .join("vits-piper-zh_CN-chaowen-medium-int8"),

@@ -26,7 +26,7 @@ use crate::config::Config;
 use crate::kws::KwsEngine;
 use crate::llm::LlmClient;
 use crate::pipeline::AppContext;
-use crate::stt::FunAsrSubprocess;
+use crate::stt::{FunAsrSubprocess, SenseVoiceStt, SttEngine};
 use crate::tts::SherpaPiperTts;
 
 async fn index(
@@ -46,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::load();
     info!("www_dir: {}", config.www_dir.display());
-    info!("stt: {} {}", config.stt_bin.display(), config.stt_model.display());
+    info!("stt engine: {}", config.stt_engine);
     info!("llm model: {} (key configured: {})", config.openrouter_model, !config.openrouter_key.is_empty());
 
     let kws = match KwsEngine::new(&config.kws_model_dir, 2) {
@@ -57,9 +57,32 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    let stt: Arc<dyn SttEngine> = match config.stt_engine.as_str() {
+        "funasr" => {
+            info!("[stt] FunASR Paraformer subprocess (Mandarin-only)");
+            Arc::new(FunAsrSubprocess::new(
+                config.stt_bin.clone(),
+                config.stt_model.clone(),
+            ))
+        }
+        _ => match SenseVoiceStt::new(config.sense_voice_model_dir.clone(), 2) {
+            Ok(e) => {
+                info!("[stt] SenseVoice in-process (zh/en/ja/ko/yue, auto LID)");
+                Arc::new(e)
+            }
+            Err(err) => {
+                info!("[stt] SenseVoice unavailable ({err:#}); falling back to FunASR");
+                Arc::new(FunAsrSubprocess::new(
+                    config.stt_bin.clone(),
+                    config.stt_model.clone(),
+                ))
+            }
+        },
+    };
+
     let ctx = Arc::new(AppContext {
         llm: LlmClient::new(config.openrouter_key.clone(), config.openrouter_model.clone()),
-        stt: Arc::new(FunAsrSubprocess::new(config.stt_bin.clone(), config.stt_model.clone())),
+        stt,
         tts: Arc::new(SherpaPiperTts::new(&config.tts_model_dir, 2)?),
         kws,
         config: config.clone(),

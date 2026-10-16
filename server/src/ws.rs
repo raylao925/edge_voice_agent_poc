@@ -90,7 +90,7 @@ async fn handle_socket(mut socket: WebSocket, ctx: Arc<AppContext>) {
                         )
                         .await;
                     }
-                    ClientMsg::Utterance { data } => {
+                    ClientMsg::Utterance { data, lang } => {
                         if active.is_some() {
                             // A turn is already running; the client should
                             // send `interrupt` first (barge-in flow).
@@ -101,7 +101,8 @@ async fn handle_socket(mut socket: WebSocket, ctx: Arc<AppContext>) {
                             Ok(b) => b,
                             Err(_) => continue,
                         };
-                        info!("[ws] utterance: {} bytes", rec.len());
+                        let stt_lang = lang.unwrap_or_default();
+                        info!("[ws] utterance: {} bytes (lang={stt_lang})", rec.len());
 
                         let (tx, rx) = mpsc::channel::<Event>(32);
                         let cancel = CancellationToken::new();
@@ -111,7 +112,7 @@ async fn handle_socket(mut socket: WebSocket, ctx: Arc<AppContext>) {
                         let timers2 = timers.clone();
                         tokio::spawn(async move {
                             if let Err(e) =
-                                run_turn(rec, ctx2, convo2, cancel2, tx.clone(), timers2).await
+                                run_turn(rec, &stt_lang, ctx2, convo2, cancel2, tx.clone(), timers2).await
                             {
                                 warn!("[turn] error: {e:#}");
                                 tx.send(Event::Error {
