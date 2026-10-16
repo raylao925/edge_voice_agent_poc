@@ -23,7 +23,7 @@ use crate::config::Config;
 use crate::llm::LlmClient;
 use crate::pipeline::AppContext;
 use crate::stt::FunAsrSubprocess;
-use crate::tts::UnimplementedTts;
+use crate::tts::SherpaPiperTts;
 
 async fn index(
     axum::extract::State(ctx): axum::extract::State<Arc<AppContext>>,
@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
     let ctx = Arc::new(AppContext {
         llm: LlmClient::new(config.openrouter_key.clone(), config.openrouter_model.clone()),
         stt: Arc::new(FunAsrSubprocess::new(config.stt_bin.clone(), config.stt_model.clone())),
-        tts: Arc::new(UnimplementedTts),
+        tts: Arc::new(SherpaPiperTts::new(&config.tts_model_dir, 2)?),
         config: config.clone(),
     });
 

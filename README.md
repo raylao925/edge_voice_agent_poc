@@ -53,7 +53,7 @@ OPENROUTER_API_KEY=... OPENROUTER_MODEL=openrouter/free cargo run
 ## Roadmap
 
 1. ✅ Project scaffold, wire protocol, STT subprocess, OpenRouter SSE client
-2. ⬜ sherpa-rs TTS integration (`tts` feature) — replaces the stub
+2. ✅ sherpa-rs TTS integration (official `sherpa-onnx` crate, in-process Piper)
 3. ⬜ Port `tools.py` (web/news search, weather, fetch_page) + two-stage agent loop
 4. ⬜ Multi-turn conversation memory (biggest POC gap)
 5. ⬜ Tauri client scaffold (tray + global hotkey), reuse `www/`

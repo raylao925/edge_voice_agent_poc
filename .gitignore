@@ -23,3 +23,4 @@ server/target/
 # local dev symlinks (absolute paths, do not commit)
 /bin
 /models
+/tts

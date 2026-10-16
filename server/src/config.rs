@@ -10,6 +10,7 @@ pub struct Config {
     pub openrouter_model: String,
     pub stt_bin: PathBuf,
     pub stt_model: PathBuf,
+    pub tts_model_dir: PathBuf,
 }
 
 impl Config {
@@ -48,6 +49,9 @@ impl Config {
             openrouter_model,
             stt_bin: root.join("bin").join("llama-funasr-paraformer"),
             stt_model: root.join("models").join("paraformer-q8.gguf"),
+            tts_model_dir: root
+                .join("tts")
+                .join("vits-piper-zh_CN-chaowen-medium-int8"),
         }
     }
 }
