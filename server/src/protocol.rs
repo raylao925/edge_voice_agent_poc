@@ -12,6 +12,13 @@ pub enum ClientMsg {
     /// Clear conversation history and start fresh.
     #[serde(rename = "new_conversation")]
     NewConversation,
+    /// Streaming 16kHz mono s16le PCM for wake-word detection (base64).
+    /// Only fed to the keyword spotter when no turn is in flight.
+    #[serde(rename = "audio_chunk")]
+    AudioChunk { data: String, seq: u64 },
+    /// Interrupt the in-flight turn (barge-in).
+    #[serde(rename = "interrupt")]
+    Interrupt,
 }
 
 /// Events we stream back. Wire-compatible with the Python POC (`server.py`),
@@ -43,6 +50,12 @@ pub enum Event {
     Done(DoneSummary),
     #[serde(rename = "error")]
     Error { message: String },
+    /// Wake word spotted in the audio_chunk stream.
+    #[serde(rename = "wake")]
+    Wake { keyword: String },
+    /// The in-flight turn was cancelled by an interrupt.
+    #[serde(rename = "interrupted")]
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Serialize)]

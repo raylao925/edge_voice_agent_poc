@@ -8,6 +8,7 @@
 mod agent;
 mod config;
 mod conversation;
+mod kws;
 mod llm;
 mod pipeline;
 mod protocol;
@@ -21,6 +22,7 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::config::Config;
+use crate::kws::KwsEngine;
 use crate::llm::LlmClient;
 use crate::pipeline::AppContext;
 use crate::stt::FunAsrSubprocess;
@@ -46,10 +48,19 @@ async fn main() -> anyhow::Result<()> {
     info!("stt: {} {}", config.stt_bin.display(), config.stt_model.display());
     info!("llm model: {} (key configured: {})", config.openrouter_model, !config.openrouter_key.is_empty());
 
+    let kws = match KwsEngine::new(&config.kws_model_dir, 2) {
+        Ok(e) => Some(Arc::new(e)),
+        Err(err) => {
+            info!("[kws] disabled: {err:#}");
+            None
+        }
+    };
+
     let ctx = Arc::new(AppContext {
         llm: LlmClient::new(config.openrouter_key.clone(), config.openrouter_model.clone()),
         stt: Arc::new(FunAsrSubprocess::new(config.stt_bin.clone(), config.stt_model.clone())),
         tts: Arc::new(SherpaPiperTts::new(&config.tts_model_dir, 2)?),
+        kws,
         config: config.clone(),
     });
 

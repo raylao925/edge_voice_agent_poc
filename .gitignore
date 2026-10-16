@@ -27,3 +27,5 @@ server/target/
 
 # tauri client
 client/src-tauri/target/
+/kws
+client/src-tauri/gen/

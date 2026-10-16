@@ -31,6 +31,7 @@
 <body>
 <h1>🎙️ Voice Agent POC</h1>
 <button id="mic">🎤</button>
+<button id="listenBtn" title="唤醒词聆听">🎧</button>
 <div id="status">连接中…</div>
 <div id="statsbar"></div>
 <div id="log"></div>
@@ -75,21 +76,37 @@ ws.onmessage = (ev) => {
   } else if (msg.type === 'error') {
     statusEl.textContent = '出错：' + msg.message;
     micBtn.classList.remove('live');
+  } else if (msg.type === 'wake') {
+    statusEl.textContent = '听到「' + (msg.keyword || '嘿助手') + '」，请讲…';
+    startPcmRec();
+  } else if (msg.type === 'interrupted') {
+    statusEl.textContent = '已打断，聆听中…';
+    micBtn.classList.remove('live');
   }
 };
 
 let botBubble = null;
 const audioQueue = [];
 let playing = false;
+let curAudio = null;
+
+function stopPlayback() {
+  audioQueue.length = 0;
+  playing = false;
+  if (curAudio) { try { curAudio.pause(); } catch (e) {} curAudio = null; }
+}
 
 function playNext() {
   if (playing || !audioQueue.length) return;
   playing = true;
+  // open the mic tap so barge-in VAD can hear the user during playback
+  ensureTap().catch(() => {});
   const msg = audioQueue.shift();
   const audio = new Audio('data:audio/wav;base64,' + msg.audio);
-  audio.onended = () => { playing = false; playNext(); };
-  audio.onerror = () => { playing = false; playNext(); };
-  audio.play().catch(() => { playing = false; playNext(); });
+  curAudio = audio;
+  audio.onended = () => { playing = false; curAudio = null; playNext(); };
+  audio.onerror = () => { playing = false; curAudio = null; playNext(); };
+  audio.play().catch(() => { playing = false; curAudio = null; playNext(); });
 }
 
 function rtfClass(rtf) {
@@ -197,9 +214,150 @@ function sendUtterance() {
   rd.readAsDataURL(blob);
 }
 
-micBtn.onclick = () => { recording ? stopRec() : startRec().catch(e => {
-  statusEl.textContent = '无法使用麦克风：' + e.message;
-}); };
+micBtn.onclick = () => {
+  if (pcmRec) { stopPcmRec(); return; }
+  recording ? stopRec() : startRec().catch(e => {
+    statusEl.textContent = '无法使用麦克风：' + e.message;
+  });
+};
+
+// ---------- wake word listen mode + barge-in ----------
+// Single continuous mic tap (16kHz) feeding three consumers:
+//  1. ring buffer (last 1.5s) — seeds recordings so the start of speech
+//     isn't clipped by wake-word/barge-in detection lag
+//  2. audio_chunk streaming — server-side keyword spotting (listen mode)
+//  3. barge-in energy VAD while assistant audio is playing
+const listenBtn = document.getElementById('listenBtn');
+let listenMode = false;
+let tap = null;
+let ring = [];
+const RING_MAX = 24000; // 1.5s @ 16kHz
+let chunkSeq = 0;
+let pcmRec = null;
+let bargeHotSince = 0;
+
+async function ensureTap() {
+  if (tap) return tap;
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+  const src = ctx.createMediaStreamSource(stream);
+  const proc = ctx.createScriptProcessor(4096, 1, 1);
+  const mute = ctx.createGain();
+  mute.gain.value = 0;
+  src.connect(proc);
+  proc.connect(mute);
+  mute.connect(ctx.destination);
+  proc.onaudioprocess = onTapAudio;
+  tap = { ctx, stream };
+  return tap;
+}
+
+function onTapAudio(e) {
+  const ch = e.inputBuffer.getChannelData(0);
+  const s16 = new Int16Array(ch.length);
+  for (let i = 0; i < ch.length; i++) {
+    const v = Math.max(-1, Math.min(1, ch[i]));
+    s16[i] = v < 0 ? v * 32768 : v * 32767;
+  }
+  for (let i = 0; i < s16.length; i++) ring.push(s16[i]);
+  if (ring.length > RING_MAX) ring.splice(0, ring.length - RING_MAX);
+
+  // 1) wake-word streaming (idle only)
+  if (listenMode && !recording && !playing && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'audio_chunk', seq: chunkSeq++, data: b64encode(new Uint8Array(s16.buffer)) }));
+  }
+  // 2) barge-in VAD during playback
+  if (playing && !recording) bargeVad(s16);
+  // 3) PCM utterance recording (wake / barge-in flows)
+  if (pcmRec) pcmFeed(s16);
+}
+
+function bargeVad(s16) {
+  let sum = 0;
+  for (let i = 0; i < s16.length; i++) sum += s16[i] * s16[i];
+  const rms = Math.sqrt(sum / s16.length) / 32768;
+  const now = Date.now();
+  if (rms > 0.06) {
+    if (!bargeHotSince) bargeHotSince = now;
+    if (now - bargeHotSince > 300) {
+      bargeHotSince = 0;
+      doBargeIn();
+    }
+  } else bargeHotSince = 0;
+}
+
+function doBargeIn() {
+  stopPlayback();
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'interrupt' }));
+  statusEl.textContent = '已打断，聆听中…';
+  startPcmRec();
+}
+
+// Start a PCM recording seeded with the last 1.0s of the ring buffer,
+// covering wake-word / barge-in detection lag.
+function startPcmRec() {
+  pcmRec = { samples: ring.slice(-16000), quietSince: Date.now(), hasVoice: false };
+  recording = true;
+  micBtn.classList.add('live');
+  statusEl.textContent = '聆听中…停顿自动结束';
+}
+
+function pcmFeed(s16) {
+  const r = pcmRec;
+  for (let i = 0; i < s16.length; i++) r.samples.push(s16[i]);
+  let sum = 0;
+  for (let i = 0; i < s16.length; i++) sum += s16[i] * s16[i];
+  const rms = Math.sqrt(sum / s16.length) / 32768;
+  if (rms > 0.02) { r.quietSince = Date.now(); r.hasVoice = true; }
+  else if (r.hasVoice && Date.now() - r.quietSince > 1500) stopPcmRec();
+}
+
+function stopPcmRec() {
+  const samples = pcmRec.samples;
+  pcmRec = null;
+  recording = false;
+  micBtn.classList.remove('live');
+  statusEl.textContent = '识别中…';
+  ws.send(JSON.stringify({ type: 'utterance', data: b64encode(new Uint8Array(encodeWav(samples, 16000))) }));
+}
+
+function encodeWav(samples, sampleRate) {
+  const buf = new ArrayBuffer(44 + samples.length * 2);
+  const v = new DataView(buf);
+  const wstr = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  wstr(0, 'RIFF'); v.setUint32(4, 36 + samples.length * 2, true); wstr(8, 'WAVE');
+  wstr(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true); v.setUint32(24, sampleRate, true);
+  v.setUint32(28, sampleRate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  wstr(36, 'data'); v.setUint32(40, samples.length * 2, true);
+  for (let i = 0; i < samples.length; i++) v.setInt16(44 + i * 2, samples[i], true);
+  return buf;
+}
+
+function b64encode(u8) {
+  let s = '';
+  for (let i = 0; i < u8.length; i += 8192) {
+    s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+  }
+  return btoa(s);
+}
+
+listenBtn.onclick = async () => {
+  try {
+    if (!listenMode) {
+      await ensureTap();
+      listenMode = true;
+      listenBtn.classList.add('live');
+      statusEl.textContent = '唤醒词聆听中…（嘿助手）';
+    } else {
+      listenMode = false;
+      listenBtn.classList.remove('live');
+      statusEl.textContent = '已连接，点麦克风开始';
+    }
+  } catch (e) {
+    statusEl.textContent = '无法使用麦克风：' + e.message;
+  }
+};
 </script>
 </body>
 </html>

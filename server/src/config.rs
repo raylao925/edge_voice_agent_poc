@@ -11,6 +11,7 @@ pub struct Config {
     pub stt_bin: PathBuf,
     pub stt_model: PathBuf,
     pub tts_model_dir: PathBuf,
+    pub kws_model_dir: PathBuf,
 }
 
 impl Config {
@@ -52,6 +53,9 @@ impl Config {
             tts_model_dir: root
                 .join("tts")
                 .join("vits-piper-zh_CN-chaowen-medium-int8"),
+            kws_model_dir: root
+                .join("kws")
+                .join("sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"),
         }
     }
 }

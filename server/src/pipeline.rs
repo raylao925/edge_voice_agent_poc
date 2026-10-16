@@ -8,8 +8,9 @@ use tokio::sync::mpsc;
 use crate::agent::agent_prepare;
 use crate::config::Config;
 use crate::conversation::Conversation;
+use crate::kws::KwsEngine;
 use crate::llm::LlmClient;
-use crate::protocol::{DoneSummary, Event};
+use tokio_util::sync::CancellationToken;use crate::protocol::{DoneSummary, Event};
 use crate::stt::SttEngine;
 use crate::tts::TtsEngine;
 
@@ -18,6 +19,7 @@ pub struct AppContext {
     pub stt: Arc<dyn SttEngine>,
     pub tts: Arc<dyn TtsEngine>,
     pub llm: LlmClient,
+    pub kws: Option<Arc<KwsEngine>>,
 }
 
 /// Buffers LLM deltas and yields complete sentences, mirroring the Python
@@ -69,14 +71,33 @@ fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
+/// Strip a leading wake-word fragment. The client starts recording from
+/// ~1s before the wake event fires, so STT may catch the tail of "嘿助手".
+fn strip_wake_prefix(text: &str) -> &str {
+    let t = text.trim();
+    for w in ["嘿助手", "嘿，助手", "嘿,助手", "嘿 助手"] {
+        if let Some(rest) = t.strip_prefix(w) {
+            let rest = rest.trim_start_matches(|c| c == '，' || c == ',' || c == ' ');
+            if !rest.is_empty() {
+                return rest;
+            }
+        }
+    }
+    t
+}
+
 /// One full turn: STT -> agent/tools -> LLM stream -> per-sentence TTS.
 /// Emits `Event`s into `tx`, mirroring `pipeline.py::run_turn_stream`.
 /// `convo` is the per-connection conversation memory: the turn's history is
 /// snapshotted at start and the completed turn is appended at the end.
+/// `cancel` lets barge-in abort the turn: checks are cheap, and on cancel
+/// the turn returns early without emitting `Done` (the `interrupted` event
+/// is sent by the socket handler instead).
 pub async fn run_turn(
     rec: Vec<u8>,
     ctx: Arc<AppContext>,
     convo: Arc<std::sync::Mutex<Conversation>>,
+    cancel: CancellationToken,
     tx: mpsc::Sender<Event>,
 ) -> Result<()> {
     let mut t: HashMap<String, f64> = HashMap::new();
@@ -98,22 +119,35 @@ pub async fn run_turn(
     })
     .await
     .ok();
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
+
+    // Strip a leading wake-word fragment: the client starts recording from
+    // ~1s before the wake event, so STT may catch the tail of "嘿助手".
+    let user_text = strip_wake_prefix(&stt.text);
 
     // 2) agent: intent + tools (last turn helps resolve follow-up references)
     let t0 = Instant::now();
     let last_turn = convo.lock().unwrap().last();
-    let agent = agent_prepare(&stt.text, &ctx.llm, last_turn, &tx).await?;
+    let agent = agent_prepare(&user_text, &ctx.llm, last_turn, &tx).await?;
     t.insert("tool".into(), t0.elapsed().as_secs_f64());
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
 
     // 3) LLM stream -> per-sentence TTS
     let t0_llm = Instant::now();
     let (delta_tx, mut delta_rx) = mpsc::channel::<String>(32);
     let llm = ctx.llm.clone();
-    let user_text = stt.text.clone();
+    let user_text = user_text.to_string();
     let context = agent.context.clone();
     let history = convo.lock().unwrap().history();
-    tokio::spawn(async move {
-        let _ = llm.stream_chat(&history, &user_text, &context, delta_tx).await;
+    let llm_user_text = user_text.clone();
+    let llm_task = tokio::spawn(async move {
+        let _ = llm
+            .stream_chat(&history, &llm_user_text, &context, delta_tx)
+            .await;
     });
 
     let mut sentences = SentenceBuf::new();
@@ -123,11 +157,23 @@ pub async fn run_turn(
     let mut total_out_sec = 0.0;
     let mut t_tts = 0.0;
 
-    // drain deltas; also handle the tail after the LLM task ends
+    // drain deltas; also handle the tail after the LLM task ends.
+    // On barge-in the token is cancelled: abort the LLM task and stop
+    // emitting (an in-flight tts.synth may still finish, its output is
+    // simply dropped).
     let mut pending: Vec<String> = vec![];
-    while let Some(delta) = delta_rx.recv().await {
-        for s in sentences.push(&delta) {
-            pending.push(s);
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                llm_task.abort();
+                return Ok(());
+            }
+            delta = delta_rx.recv() => {
+                let Some(delta) = delta else { break };
+                for s in sentences.push(&delta) {
+                    pending.push(s);
+                }
+            }
         }
         // synthesize eagerly as sentences arrive
         for sentence in pending.drain(..) {
@@ -153,9 +199,12 @@ pub async fn run_turn(
                     seq += 1;
                 }
                 Err(e) => {
-                    // TTS not wired yet: keep the text flowing, note the gap.
                     tracing::warn!("tts failed for sentence {seq}: {e:#}");
                 }
+            }
+            if cancel.is_cancelled() {
+                llm_task.abort();
+                return Ok(());
             }
         }
     }
@@ -172,11 +221,12 @@ pub async fn run_turn(
         t["stt"] + t["tool"] + t["llm_stream"],
     );
 
-    // 4) remember this turn for the next ones (no-op for empty input)
+    // 4) remember this turn for the next ones (no-op for empty input).
+    // Store the stripped text so history stays clean of wake-word fragments.
     convo
         .lock()
         .unwrap()
-        .push(stt.text.clone(), full_reply.clone());
+        .push(user_text.clone(), full_reply.clone());
 
     tx.send(Event::Done(DoneSummary {
         text: stt.text,

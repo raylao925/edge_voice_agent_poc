@@ -2318,6 +2318,7 @@ dependencies = [
  "sherpa-onnx",
  "tempfile",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]
