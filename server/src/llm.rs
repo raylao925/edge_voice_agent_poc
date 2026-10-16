@@ -3,6 +3,8 @@ use futures_util::StreamExt;
 use serde_json::json;
 use tokio::sync::mpsc;
 
+use crate::conversation::{ChatMsg, Role};
+
 pub const SYSTEM_PROMPT: &str =
     "你是一个简洁的中文语音助手。用简体中文回答，控制在两句话以内，口语化，不要用列表或代码。";
 
@@ -53,9 +55,11 @@ impl LlmClient {
     }
 
     /// Streams the assistant reply as text deltas into `tx`, then returns.
-    /// Mirrors the Python POC's `llm_stream`.
+    /// `history` holds previous turns (oldest first); the current user text
+    /// is appended after it. Mirrors the Python POC's `llm_stream`.
     pub async fn stream_chat(
         &self,
+        history: &[ChatMsg],
         user_text: &str,
         context: &str,
         tx: mpsc::Sender<String>,
@@ -72,6 +76,16 @@ impl LlmClient {
             system += &format!("\n以下是实时工具返回的参考资料，请基于它们回答，不要编造：\n{ctx}");
         }
 
+        let mut messages = vec![json!({"role": "system", "content": system})];
+        for m in history {
+            let role = match m.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+            };
+            messages.push(json!({"role": role, "content": m.content}));
+        }
+        messages.push(json!({"role": "user", "content": user_text}));
+
         let resp = self
             .http
             .post("https://openrouter.ai/api/v1/chat/completions")
@@ -79,10 +93,7 @@ impl LlmClient {
             .json(&json!({
                 "model": self.model,
                 "stream": true,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_text},
-                ],
+                "messages": messages,
             }))
             .send()
             .await

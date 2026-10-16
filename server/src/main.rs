@@ -7,6 +7,7 @@
 
 mod agent;
 mod config;
+mod conversation;
 mod llm;
 mod pipeline;
 mod protocol;

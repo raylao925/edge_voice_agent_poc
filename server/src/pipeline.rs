@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::agent_prepare;
 use crate::config::Config;
+use crate::conversation::Conversation;
 use crate::llm::LlmClient;
 use crate::protocol::{DoneSummary, Event};
 use crate::stt::SttEngine;
@@ -70,9 +71,12 @@ fn round2(v: f64) -> f64 {
 
 /// One full turn: STT -> agent/tools -> LLM stream -> per-sentence TTS.
 /// Emits `Event`s into `tx`, mirroring `pipeline.py::run_turn_stream`.
+/// `convo` is the per-connection conversation memory: the turn's history is
+/// snapshotted at start and the completed turn is appended at the end.
 pub async fn run_turn(
     rec: Vec<u8>,
     ctx: Arc<AppContext>,
+    convo: Arc<std::sync::Mutex<Conversation>>,
     tx: mpsc::Sender<Event>,
 ) -> Result<()> {
     let mut t: HashMap<String, f64> = HashMap::new();
@@ -95,9 +99,10 @@ pub async fn run_turn(
     .await
     .ok();
 
-    // 2) agent: intent + tools
+    // 2) agent: intent + tools (last turn helps resolve follow-up references)
     let t0 = Instant::now();
-    let agent = agent_prepare(&stt.text, &ctx.llm, &tx).await?;
+    let last_turn = convo.lock().unwrap().last();
+    let agent = agent_prepare(&stt.text, &ctx.llm, last_turn, &tx).await?;
     t.insert("tool".into(), t0.elapsed().as_secs_f64());
 
     // 3) LLM stream -> per-sentence TTS
@@ -106,8 +111,9 @@ pub async fn run_turn(
     let llm = ctx.llm.clone();
     let user_text = stt.text.clone();
     let context = agent.context.clone();
+    let history = convo.lock().unwrap().history();
     tokio::spawn(async move {
-        let _ = llm.stream_chat(&user_text, &context, delta_tx).await;
+        let _ = llm.stream_chat(&history, &user_text, &context, delta_tx).await;
     });
 
     let mut sentences = SentenceBuf::new();
@@ -165,6 +171,12 @@ pub async fn run_turn(
         "total".into(),
         t["stt"] + t["tool"] + t["llm_stream"],
     );
+
+    // 4) remember this turn for the next ones (no-op for empty input)
+    convo
+        .lock()
+        .unwrap()
+        .push(stt.text.clone(), full_reply.clone());
 
     tx.send(Event::Done(DoneSummary {
         text: stt.text,

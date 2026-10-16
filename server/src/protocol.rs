@@ -9,6 +9,9 @@ pub enum ClientMsg {
     Ping,
     #[serde(rename = "utterance")]
     Utterance { data: String }, // base64-encoded recorded audio
+    /// Clear conversation history and start fresh.
+    #[serde(rename = "new_conversation")]
+    NewConversation,
 }
 
 /// Events we stream back. Wire-compatible with the Python POC (`server.py`),

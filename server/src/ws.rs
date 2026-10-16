@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+use crate::conversation::Conversation;
 use crate::pipeline::{run_turn, AppContext};
 use crate::protocol::{ClientMsg, Event};
 
@@ -32,6 +33,8 @@ async fn send_event(socket: &mut WebSocket, ev: &Event) {
 }
 
 async fn handle_socket(mut socket: WebSocket, ctx: Arc<AppContext>) {
+    // One conversation per connection: in-memory multi-turn history.
+    let convo = Arc::new(std::sync::Mutex::new(Conversation::new(10)));
     while let Some(msg) = socket.recv().await {
         let msg = match msg {
             Ok(m) => m,
@@ -48,6 +51,22 @@ async fn handle_socket(mut socket: WebSocket, ctx: Arc<AppContext>) {
         };
         match parsed {
             ClientMsg::Ping => send_event(&mut socket, &Event::Pong).await,
+            ClientMsg::NewConversation => {
+                let n = {
+                    let mut c = convo.lock().unwrap();
+                    let n = c.len();
+                    c.clear();
+                    n
+                };
+                info!("[ws] new conversation (cleared {n} turns)");
+                send_event(
+                    &mut socket,
+                    &Event::Status {
+                        text: "已开始新对话".to_string(),
+                    },
+                )
+                .await;
+            }
             ClientMsg::Utterance { data } => {
                 let rec = match BASE64_STANDARD.decode(&data) {
                     Ok(b) => b,
@@ -57,8 +76,9 @@ async fn handle_socket(mut socket: WebSocket, ctx: Arc<AppContext>) {
 
                 let (tx, mut rx) = mpsc::channel::<Event>(32);
                 let ctx2 = ctx.clone();
+                let convo2 = convo.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = run_turn(rec, ctx2, tx.clone()).await {
+                    if let Err(e) = run_turn(rec, ctx2, convo2, tx.clone()).await {
                         warn!("[turn] error: {e:#}");
                         tx.send(Event::Error {
                             message: format!("{e:#}")[..200.min(format!("{e:#}").len())]

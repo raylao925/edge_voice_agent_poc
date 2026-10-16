@@ -7,6 +7,7 @@ use serde::Deserialize;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
+use crate::conversation::Turn;
 use crate::llm::LlmClient;
 use crate::protocol::{Event, ToolCallInfo};
 use crate::tools::find_tool;
@@ -49,12 +50,15 @@ tool_calls: vec![],
 }
 
 /// Intent detection + tool execution. Emits `Status` events for the frontend.
+/// `last_turn` (if any) is included in the intent prompt so follow-ups like
+/// 「那明天呢？」 resolve against the previous turn.
 pub async fn agent_prepare(
 user_text: &str,
 llm: &LlmClient,
+last_turn: Option<Turn>,
 status_tx: &mpsc::Sender<Event>,
 ) -> Result<AgentOutput> {
-let intent = detect_intent(user_text, llm).await;
+let intent = detect_intent(user_text, llm, last_turn).await;
 let tool_name = intent.tool.as_str();
 if tool_name == "none" {
 return Ok(empty_output());
@@ -112,9 +116,13 @@ tool_calls: vec![],
 }
 }
 
-async fn detect_intent(user_text: &str, llm: &LlmClient) -> Intent {
+async fn detect_intent(user_text: &str, llm: &LlmClient, last_turn: Option<Turn>) -> Intent {
 if llm.has_key() {
-let prompt = INTENT_PROMPT.replace("{text}", user_text);
+let mut prompt = String::new();
+if let Some(t) = last_turn {
+prompt += &format!("上轮对话：\n用户：{}\n助手：{}\n\n", t.user_text, t.reply);
+}
+prompt += &INTENT_PROMPT.replace("{text}", user_text);
 if let Ok(raw) = llm.chat_once(&prompt).await {
 let clean = raw.replace("```json", "").replace("```", "");
 if let Ok(intent) = serde_json::from_str::<Intent>(clean.trim()) {
