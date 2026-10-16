@@ -13,6 +13,7 @@ mod llm;
 mod pipeline;
 mod protocol;
 mod stt;
+mod timers;
 mod tools;
 mod tts;
 mod ws;

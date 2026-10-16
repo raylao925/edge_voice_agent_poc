@@ -10,6 +10,7 @@ use crate::config::Config;
 use crate::conversation::Conversation;
 use crate::kws::KwsEngine;
 use crate::llm::LlmClient;
+use crate::timers::TimerRegistry;
 use tokio_util::sync::CancellationToken;use crate::protocol::{DoneSummary, Event};
 use crate::stt::SttEngine;
 use crate::tts::TtsEngine;
@@ -99,6 +100,7 @@ pub async fn run_turn(
     convo: Arc<std::sync::Mutex<Conversation>>,
     cancel: CancellationToken,
     tx: mpsc::Sender<Event>,
+    timers: TimerRegistry,
 ) -> Result<()> {
     let mut t: HashMap<String, f64> = HashMap::new();
 
@@ -130,7 +132,7 @@ pub async fn run_turn(
     // 2) agent: intent + tools (last turn helps resolve follow-up references)
     let t0 = Instant::now();
     let last_turn = convo.lock().unwrap().last();
-    let agent = agent_prepare(&user_text, &ctx.llm, last_turn, &tx).await?;
+    let agent = agent_prepare(&user_text, &ctx.llm, last_turn, &tx, &timers).await?;
     t.insert("tool".into(), t0.elapsed().as_secs_f64());
     if cancel.is_cancelled() {
         return Ok(());

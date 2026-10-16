@@ -56,6 +56,10 @@ pub enum Event {
     /// The in-flight turn was cancelled by an interrupt.
     #[serde(rename = "interrupted")]
     Interrupted,
+    /// A reminder timer fired. The reminder speech follows as normal
+    /// `audio` events; the frontend shows the bubble itself.
+    #[serde(rename = "timer_fired")]
+    TimerFired { id: String, message: String },
 }
 
 #[derive(Debug, Clone, Serialize)]

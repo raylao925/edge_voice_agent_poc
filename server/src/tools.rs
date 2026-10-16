@@ -432,7 +432,9 @@ mod tests {
     async fn smoke_news_search() {
         let t = NewsSearch::new();
         let r = t.run("人工智能").await.unwrap();
-        println!("{}", &r[..r.len().min(300)]);
+        // char-boundary-safe preview (byte slicing panics on CJK text)
+        let preview: String = r.chars().take(100).collect();
+        println!("{preview}");
         assert!(!r.is_empty());
     }
 

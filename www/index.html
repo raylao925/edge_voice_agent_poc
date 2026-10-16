@@ -82,6 +82,11 @@ ws.onmessage = (ev) => {
   } else if (msg.type === 'interrupted') {
     statusEl.textContent = '已打断，聆听中…';
     micBtn.classList.remove('live');
+  } else if (msg.type === 'timer_fired') {
+    addBubble('bot', '⏰ 提醒', msg.message || '');
+    statusEl.textContent = '⏰ 提醒：' + (msg.message || '');
+    // the reminder speech arrives as normal 'audio' events and plays
+    // through the existing queue
   }
 };
 

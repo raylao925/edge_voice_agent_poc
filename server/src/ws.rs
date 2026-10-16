@@ -15,6 +15,7 @@ use crate::conversation::Conversation;
 use crate::kws::KwsStream;
 use crate::pipeline::{run_turn, AppContext};
 use crate::protocol::{ClientMsg, Event};
+use crate::timers::TimerRegistry;
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
@@ -48,6 +49,11 @@ async fn handle_socket(mut socket: WebSocket, ctx: Arc<AppContext>) {
     // In-flight turn, if any. The select! loop keeps reading client messages
     // while a turn runs so `interrupt` (barge-in) is handled promptly.
     let mut active: Option<ActiveTurn> = None;
+    // Reminder timers live outside any turn: their own channel is forwarded
+    // by the select! loop below.
+    let (timer_tx, mut timer_rx) = mpsc::channel::<Event>(32);
+    let timers = TimerRegistry::new(timer_tx, ctx.tts.clone());
+    let mut timer_open = true;
 
     loop {
         tokio::select! {
@@ -102,9 +108,10 @@ async fn handle_socket(mut socket: WebSocket, ctx: Arc<AppContext>) {
                         let ctx2 = ctx.clone();
                         let convo2 = convo.clone();
                         let cancel2 = cancel.clone();
+                        let timers2 = timers.clone();
                         tokio::spawn(async move {
                             if let Err(e) =
-                                run_turn(rec, ctx2, convo2, cancel2, tx.clone()).await
+                                run_turn(rec, ctx2, convo2, cancel2, tx.clone(), timers2).await
                             {
                                 warn!("[turn] error: {e:#}");
                                 tx.send(Event::Error {
@@ -186,9 +193,24 @@ async fn handle_socket(mut socket: WebSocket, ctx: Arc<AppContext>) {
                     }
                 }
             }
+            // Forward timer events (fired reminders) while the connection
+            // is open. Guarded so a closed channel doesn't busy-loop.
+            timer_ev = async {
+                if timer_open {
+                    timer_rx.recv().await
+                } else {
+                    std::future::pending().await
+                }
+            } => {
+                match timer_ev {
+                    Some(ev) => send_event(&mut socket, &ev).await,
+                    None => timer_open = false,
+                }
+            }
         }
     }
-    // Connection closing: make sure a running turn stops.
+    // Connection closing: stop the running turn and drop pending timers.
+    timers.shutdown();
     if let Some(turn) = active {
         turn.cancel.cancel();
     }
